@@ -1,0 +1,219 @@
+
+module mesif;
+reg Clock, Clear;
+reg [31:0] address;
+reg [1:0] RWMIoperation;
+
+reg [1:0] mesif_state;
+reg [33:0] outDRAM , outsnoopbus;
+
+
+
+parameter R = 2'b00;
+parameter W = 2'b01;
+parameter M = 2'b10;
+parameter I = 2'b11;
+parameter NOHIT  = 2'b00;
+parameter HIT = 2'b01;
+parameter HITM = 2'b10;
+parameter stateM = 3'b000;
+parameter stateE = 3'b001;
+parameter stateS = 3'b010;
+parameter stateI = 3'b011;
+parameter stateF = 3'b100;
+parameter L3hit = 1'b1;
+
+reg [1:0]  GetSnoop;
+reg [1:0] mesif_NextState;
+function [1 : 0] GetSnoopResult;
+input [31 : 0] address; 
+input [1:0] RWMIoperation;
+begin
+  if (address[1:0] == 2'b11)
+      GetSnoopResult = NOHIT;
+else 
+  GetSnoopResult = address[1:0] ;
+  end
+  
+
+endfunction
+
+function PutSnoopResult; 
+input [31 : 0] address; 
+input [1:0] RWMIoperation;
+begin 
+  case(RWMIoperation)
+   R : begin
+     if (cache_l2.cache_hit)
+       begin
+        if (cache_l2.cache_mem[cache_l2.cache_index][cache_l2.cache_way][MESIF_MSB:MESIF_LSB] == stateI)
+          $display("  SR no HIT  \n");
+        else if (cache_l2.cache_mem[cache_l2.cache_index][cache_l2.cache_way][MESIF_MSB:MESIF_LSB] == stateS)
+         $display("  SR HIT  \n");
+        else if (cache_l2.cache_mem[cache_l2.cache_index][cache_l2.cache_way][MESIF_MSB:MESIF_LSB] == stateE)
+          begin
+            $display("  SR HIT  \n");
+            cache_l2.cache_mem[cache_l2.cache_index][cache_l2.cache_way][MESIF_MSB:MESIF_LSB] = stateS;
+          end
+        else 
+          begin
+            $display("  SR HITM  \n");
+            cache_l2.cache_mem[cache_l2.cache_index][cache_l2.cache_way][MESIF_MSB:MESIF_LSB] = stateS;
+           end
+         end
+       
+     else
+      $display(" SR no HIT  \n");
+   end
+   W : begin
+        if(RWMIoperation == stateM)
+          begin
+        $display("   outSnoopbus  \n");
+        $monitor($time, "   %b    %h    ", R, address); 
+          //if u did RFO, read the particular line.
+        end
+        end
+   M : begin
+        if(L2hit)
+          begin
+              if (mesif_state == stateI)
+                  $display("   outsnoopbus : SR no HIT  \n");
+        
+              else if (mesif_state == stateS)
+                  begin
+                  $display("   outsnoopbus : SR HIT  \n");
+                  mesif_state = stateI;
+                  end
+              else if (mesif_state == stateE)
+                  begin
+                  $display("   outsnoopbus : SR HIT  \n");
+                  mesif_state = stateI;
+                end
+              else 
+                  begin
+                  $display("   outsnoopbus : SR HITM  \n");
+                  $display("   outDRAM:  \n");
+                  $monitor ( "   %b    %h    ", W, address);
+                  mesif_state = stateI;
+                end
+            end
+                
+        
+        else
+            $display("   outsnoopbus : SR no HIT  \n");
+      
+    end
+      
+    I : begin
+            mesif_state = stateI;
+        end
+    
+  endcase
+  
+
+end
+endfunction
+
+always @(posedge Clock)
+begin
+if (Clear)
+	mesif_state <= stateI;
+else
+	mesif_state <= mesif_NextState;
+end
+
+
+always @(address, mesif_state)
+
+begin
+  GetSnoop = GetSnoopResult(address , RWMIoperation);
+case (RWMIoperation)
+   R : begin 
+        case (mesif_state)
+          	stateI :	begin
+	            if (GetSnoop == NOHIT)
+		              begin 
+		                  mesif_NextState = stateE;
+		                  $display("   outDRAM  \n");
+                      $monitor ($time, "   %b    %h    ", RWMIoperation, address);
+		              end
+              else if (GetSnoop == HIT)
+                   begin
+                  		  mesif_NextState = stateF;
+        		            $display("   outSnoopbus  \n");
+                      $monitor($time, "   %b    %h    ", RWMIoperation, address);
+    		             end
+           		 else
+                  begin
+                 		  mesif_NextState = stateS;
+                		   $display("   outSnoopbus  \n");
+                     $monitor($time, "   %b    %h    ", RWMIoperation, address);
+                  end 
+            end
+	       stateS :	begin
+	                 mesif_NextState = stateS;
+              	   end
+        	stateE:	begin
+                	  mesif_NextState = stateE;
+            	   end
+        	stateM:	begin
+	                 mesif_NextState = stateM;
+            	   end
+            	   
+    	   endcase
+   end	
+
+
+W : begin 
+       $display("   outSnoopbus  \n");
+       $monitor($time, "   %d    %h    ", W, address);
+       $display("   outDRAM  \n");
+       $monitor($time, "   %d    %h    ", W, address);
+    end
+	      
+	M : begin 
+        case (mesif_state)
+     	stateI :	begin
+	            if (GetSnoop == NOHIT)
+		              begin 
+		                  mesif_NextState = stateM;
+		              end
+              else if (GetSnoop == HIT)
+                   begin
+                  		  mesif_NextState = stateM;
+        		            $display("   outSnoopbus  \n");
+                      $monitor($time, "   %d    %h    ", RWMIoperation, address);
+    		             end
+           		 else
+                  begin
+                 		  mesif_NextState = stateF;
+                		   $display("   outSnoopbus  \n");
+                     $monitor($time, "   %d    %h    ", RWMIoperation, address);
+                  end 
+            end
+	       stateS :	begin
+	                 mesif_NextState = stateS;
+              	   end
+        	stateE:	begin
+                	  mesif_NextState = stateE;
+            	   end
+        	stateM:	begin
+	                 mesif_NextState = stateM;
+            	   end
+	
+endcase
+
+end
+
+  I : begin
+           $display("   outsnoopbus: RWMIoperation  address \n");
+           $monitor ( "            %b           %h    ", I , address);
+		   end
+
+
+
+endcase 
+end
+
+
+endmodule
